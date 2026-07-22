@@ -19,12 +19,12 @@ jobs:
         ksu_status: [ "WithKSU", "NoKSU" ]
 
     steps:
-    - name: 环境初始化 & 交换空间
+    - name: Setup SWAP
       uses: pierotofy/set-swap-space@master
       with:
           swap-size-gb: 16
           
-    - name: 安装依赖
+    - name: 准备环境
       run: |
         sudo apt-get update
         sudo apt-get install -y git bc build-essential flex bison libssl-dev libelf-dev clang lld llvm python3 zip
@@ -36,52 +36,71 @@ jobs:
         path: ${{ github.workspace }}/clang-aosp
         key: clang-${{ env.CLANG_VERSION }}
 
-    - name: 下载 Clang
+    - name: 下载 Clang (r563880c)
       if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p ${{ github.workspace }}/clang-aosp
         wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-qpr2-release/clang-${{ env.CLANG_VERSION }}.tar.gz
         tar -C ${{ github.workspace }}/clang-aosp -xf clang-${{ env.CLANG_VERSION }}.tar.gz
 
-    - name: 检出内核源码
+    - name: 检出源码
       run: |
+        cd $GITHUB_WORKSPACE
         git clone --depth=1 ${{ env.KERNEL_SRC }} -b ${{ env.BRANCH }} sm8450
         sed -i 's/ -dirty//g' sm8450/scripts/setlocalversion
 
     - name: 集成 KernelSU & SUSFS
       if: ${{ matrix.ksu_status == 'WithKSU' }}
       run: |
-        cd sm8450
+        cd $GITHUB_WORKSPACE
         curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-        cp $GITHUB_WORKSPACE/patch/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch .
-        cp $GITHUB_WORKSPACE/patch/kernel_patches/fs/* fs/
-        cp $GITHUB_WORKSPACE/patch/kernel_patches/include/linux/* include/linux/
-        patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
-
-    - name: 集成 Re:Kernel 基础补丁
-      run: |
-        git clone -b upstream/v9.2 https://github.com/myflavor/ReKernel-X.git rekernel_tmp
-        cp -r rekernel_tmp/Integrate/* sm8450/
-        cd sm8450 && chmod +x patches.sh && ./patches.sh
-
-    - name: 集成最新 Re:Kernel LKM (Built-in)
-      run: |
-        git clone --depth=1 -b main https://github.com/myflavor/ReKernel-X.git rekernel_lkm
-        mkdir -p sm8450/drivers/rekernel_x
-        cp -rf rekernel_lkm/LKM-Source/* sm8450/drivers/rekernel_x/
+        cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch $GITHUB_WORKSPACE/sm8450/KernelSU/
+        cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-5.10.patch $GITHUB_WORKSPACE/sm8450/common/
+        cp -r $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* $GITHUB_WORKSPACE/sm8450/common/fs/
+        cp -r $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/* $GITHUB_WORKSPACE/sm8450/common/include/linux/
         
-        # 简化：直接覆盖写入，确保 Built-in 模式
-        echo 'obj-y += rekernel_x.o' > sm8450/drivers/rekernel_x/Makefile
-        echo 'source "drivers/rekernel_x/Kconfig"' >> sm8450/drivers/Kconfig
-        echo 'obj-y += rekernel_x/' >> sm8450/drivers/Makefile
+        cd $GITHUB_WORKSPACE/sm8450/KernelSU
+        patch -p1 < 10_enable_susfs_for_ksu.patch
+        cd $GITHUB_WORKSPACE/sm8450/common
+        patch -p1 < 50_add_susfs_in_kernel-5.10.patch
+        
+        echo "CONFIG_KSU=y" >> $GITHUB_WORKSPACE/sm8450/arch/arm64/configs/gki_defconfig
+        echo "CONFIG_KSU_SUSFS=y" >> $GITHUB_WORKSPACE/sm8450/arch/arm64/configs/gki_defconfig
+
+    - name: 集成 Re:Kernel 基础补丁 (Integrate)
+      run: |
+        cd $GITHUB_WORKSPACE
+        git clone -b upstream/v9.2 https://github.com/myflavor/ReKernel-X.git rekernel_tmp
+        cp -r rekernel_tmp/Integrate/* $GITHUB_WORKSPACE/sm8450/
+        rm -rf rekernel_tmp
+        
+        cd $GITHUB_WORKSPACE/sm8450
+        chmod +x patches.sh
+        ./patches.sh
+
+    - name: 集成 Re:Kernel LKM 源码 (Built-in 模式优化版)
+      run: |
+        cd $GITHUB_WORKSPACE
+        git clone -b main https://github.com/myflavor/ReKernel-X.git rekernel_lkm
+        mkdir -p $GITHUB_WORKSPACE/sm8450/drivers/rekernel_x
+        cp -r rekernel_lkm/LKM-Source/* $GITHUB_WORKSPACE/sm8450/drivers/rekernel_x/
+        rm -rf rekernel_lkm
+        
+        cd $GITHUB_WORKSPACE/sm8450/drivers/rekernel_x
+        sed -i 's/obj-m/obj-y/g' Makefile
+        
+        cd $GITHUB_WORKSPACE/sm8450
+        echo 'source "drivers/rekernel_x/Kconfig"' >> drivers/Kconfig
+        echo 'obj-y += rekernel_x/' >> drivers/Makefile
 
     - name: 编译内核
       run: |
         cd sm8450
         export PATH="${{ github.workspace }}/clang-aosp/bin:$PATH"
-        MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- REKERNEL_X_VERSION=v9.2-BuiltIn"
         
-        # 选择配置
+        MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+        MAKE_ARGS="$MAKE_ARGS REKERNEL_X_VERSION=v9.2-BuiltIn"
+        
         if [ "${{ matrix.device }}" = "Xiaomi12" ]; then
             CONFIG_LIST="gki_defconfig vendor/xiaomi_GKI.config vendor/cupid_GKI.config vendor/waipio_GKI.config vendor/debugfs.config"
         elif [ "${{ matrix.device }}" = "Xiaomi12SPro" ]; then
@@ -95,12 +114,17 @@ jobs:
 
     - name: 打包 AnyKernel3
       run: |
+        cd $GITHUB_WORKSPACE
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-        sed -i 's/do.devicecheck=1/do.devicecheck=0/; s/BLOCK=.*/BLOCK=auto;/; s/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=auto;/' AnyKernel3/anykernel.sh
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+        sed -i 's!BLOCK=.*!BLOCK=auto;!g' AnyKernel3/anykernel.sh
+        sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=auto;/g' AnyKernel3/anykernel.sh
         cp sm8450/out/arch/arm64/boot/Image AnyKernel3/
-        cd AnyKernel3 && zip -r ../${{ matrix.device }}-${{ matrix.ksu_status }}.zip .
+        
+        ZIP_NAME="${{ matrix.device }}-${{ matrix.ksu_status }}.zip"
+        cd AnyKernel3 && zip -r ../$ZIP_NAME ./*
 
-    - name: 上传刷机包
+    - name: 上传刷机包 (AnyKernel3)
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.device }}-${{ matrix.ksu_status }}-ZIP
