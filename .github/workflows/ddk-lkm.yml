@@ -1,0 +1,64 @@
+name: Build ReKernel-X LKM Target
+
+on:
+  workflow_call:
+    inputs:
+      kmi:
+        description: 'KMI version'
+        required: true
+        type: string
+      ddk_release:
+        description: 'DDK release version'
+        required: false
+        default: '20260313'
+        type: string
+      version:
+        description: 'ReKernel-X version'
+        required: false
+        default: 'dev'
+        type: string
+
+jobs:
+  build-rekernel_x-ko:
+    name: Build rekernel_x.ko for ${{ inputs.kmi }}-${{ inputs.ddk_release }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk:${{ inputs.kmi }}-${{ inputs.ddk_release }}
+      options: --privileged
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+      - name: Build rekernel_x.ko
+        run: |
+
+          KMI=${{ inputs.kmi }}
+
+          echo "=== Building rekernel_x.ko for KMI: $KMI ==="
+
+          # Source 
+          cp -r ./LKM-Source /opt/ddk/src/$KMI/drivers/rekernel_x
+
+          # Build
+          cd /opt/ddk/src/$KMI
+          make -C /opt/ddk/kdir/$KMI \
+            M=/opt/ddk/src/$KMI/drivers/rekernel_x \
+            CC="clang" \
+            RKX_VERSION="${{ inputs.version }}" \
+            modules
+
+          echo "=== Build completed ==="
+
+          # Artifact
+          mkdir -p /github/workspace/out
+          OUTPUT_NAME="rekernel_x-${{ inputs.kmi }}-${{ inputs.ddk_release }}.ko"
+          cp /opt/ddk/src/$KMI/drivers/rekernel_x/rekernel_x.ko "/github/workspace/out/$OUTPUT_NAME"
+          llvm-strip -d "/github/workspace/out/$OUTPUT_NAME"
+          ls -la "/github/workspace/out/$OUTPUT_NAME"
+
+      - name: Upload rekernel_x.ko artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rekernel_x-${{ inputs.kmi }}-${{ inputs.ddk_release }}.ko
+          path: /github/workspace/out/rekernel_x-${{ inputs.kmi }}-${{ inputs.ddk_release }}.ko
