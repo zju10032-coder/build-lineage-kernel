@@ -53,19 +53,18 @@ jobs:
       if: ${{ matrix.ksu_status == 'WithKSU' }}
       run: |
         cd $GITHUB_WORKSPACE
-        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-        cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch $GITHUB_WORKSPACE/sm8450/KernelSU/
-        cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-5.10.patch $GITHUB_WORKSPACE/sm8450/common/
-        cp -r $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* $GITHUB_WORKSPACE/sm8450/common/fs/
-        cp -r $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/* $GITHUB_WORKSPACE/sm8450/common/include/linux/
-        
-        cd $GITHUB_WORKSPACE/sm8450/KernelSU
-        patch -p1 < 10_enable_susfs_for_ksu.patch
-        cd $GITHUB_WORKSPACE/sm8450/common
-        patch -p1 < 50_add_susfs_in_kernel-5.10.patch
-        
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android12-5.10 patch
         echo "CONFIG_KSU=y" >> $GITHUB_WORKSPACE/sm8450/arch/arm64/configs/gki_defconfig
         echo "CONFIG_KSU_SUSFS=y" >> $GITHUB_WORKSPACE/sm8450/arch/arm64/configs/gki_defconfig
+        
+        cd $GITHUB_WORKSPACE/sm8450
+        curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+        
+        cp $GITHUB_WORKSPACE/patch/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch $GITHUB_WORKSPACE/sm8450/
+        cp $GITHUB_WORKSPACE/patch/kernel_patches/fs/* $GITHUB_WORKSPACE/sm8450/fs/
+        cp $GITHUB_WORKSPACE/patch/kernel_patches/include/linux/* $GITHUB_WORKSPACE/sm8450/include/linux/
+        patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
+        echo "KernelSU 与 SUSFS 注入完成"
 
     - name: 集成 Re:Kernel 基础补丁 (Integrate)
       run: |
@@ -77,21 +76,26 @@ jobs:
         cd $GITHUB_WORKSPACE/sm8450
         chmod +x patches.sh
         ./patches.sh
+        echo "Re:Kernel 基础补丁集成完成"
 
     - name: 集成 Re:Kernel LKM 源码 (Built-in 模式优化版)
       run: |
         cd $GITHUB_WORKSPACE
         git clone -b main https://github.com/myflavor/ReKernel-X.git rekernel_lkm
+        
+        # 创建新指定的 rekernel_x 目录
         mkdir -p $GITHUB_WORKSPACE/sm8450/drivers/rekernel_x
         cp -r rekernel_lkm/LKM-Source/* $GITHUB_WORKSPACE/sm8450/drivers/rekernel_x/
         rm -rf rekernel_lkm
         
+        # 修改 Makefile 为编入内核 (obj-y)
         cd $GITHUB_WORKSPACE/sm8450/drivers/rekernel_x
         sed -i 's/obj-m/obj-y/g' Makefile
         
+        # 挂载到主 Makefile（不再追加不存在的 Kconfig）
         cd $GITHUB_WORKSPACE/sm8450
-        echo 'source "drivers/rekernel_x/Kconfig"' >> drivers/Kconfig
         echo 'obj-y += rekernel_x/' >> drivers/Makefile
+        echo "Re:Kernel LKM 源码挂载内核树完成"
 
     - name: 编译内核
       run: |
