@@ -1,0 +1,75 @@
+name: Build Xiaomi 13 (fuxi) Kernel
+
+on:
+  workflow_dispatch:
+
+env:
+  CLANG_VERSION: r596125
+  KERNEL_SRC: https://github.com/LineageOS/android_kernel_xiaomi_sm8550
+  BRANCH: lineage-23.2
+
+jobs:
+  build:
+    name: Build Xiaomi 13 Kernel
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Setup SWAP
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 16
+
+    - name: 准备环境
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git bc build-essential flex bison libssl-dev libelf-dev clang lld llvm python3 zip
+
+    - name: 编译器缓存
+      id: cache-clang
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/clang-aosp
+        key: clang-${{ env.CLANG_VERSION }}
+
+    - name: 下载 Clang (r596125)
+      if: steps.cache-clang.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ${{ github.workspace }}/clang-aosp
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/mirror-goog-main-llvm-toolchain-source/clang-${{ env.CLANG_VERSION }}.tar.gz
+        tar -C ${{ github.workspace }}/clang-aosp -xf clang-${{ env.CLANG_VERSION }}.tar.gz
+
+    - name: 检出源码
+      run: |
+        cd $GITHUB_WORKSPACE
+        git clone --depth=1 ${{ env.KERNEL_SRC }} -b ${{ env.BRANCH }} sm8550
+        sed -i 's/ -dirty//g' sm8550/scripts/setlocalversion
+
+    - name: 编译内核
+      run: |
+        cd sm8550
+        export PATH="${{ github.workspace }}/clang-aosp/bin:$PATH"
+
+        MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+        
+        CONFIG_LIST="gki_defconfig vendor/kalama_GKI.config vendor/fuxi_GKI.config"
+
+        make O=out $MAKE_ARGS $CONFIG_LIST
+        make -j$(nproc --all) O=out $MAKE_ARGS
+
+    - name: 打包 AnyKernel3
+      run: |
+        cd $GITHUB_WORKSPACE
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+        sed -i 's!BLOCK=.*!BLOCK=auto;!g' AnyKernel3/anykernel.sh
+        sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=auto;/g' AnyKernel3/anykernel.sh
+        cp sm8550/out/arch/arm64/boot/Image AnyKernel3/
+
+        ZIP_NAME="Xiaomi13-Kernel.zip"
+        cd AnyKernel3 && zip -r ../$ZIP_NAME ./*
+
+    - name: 上传刷机包 (AnyKernel3)
+      uses: actions/upload-artifact@v4
+      with:
+        name: Xiaomi13-Kernel-ZIP
+        path: ${{ github.workspace }}/Xiaomi13-Kernel.zip
