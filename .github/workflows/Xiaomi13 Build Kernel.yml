@@ -22,7 +22,7 @@ jobs:
     - name: 准备环境
       run: |
         sudo apt-get update
-        sudo apt-get install -y git bc build-essential flex bison libssl-dev libelf-dev clang lld llvm python3 zip
+        sudo apt-get install -y git bc build-essential flex bison libssl-dev libelf-dev clang lld llvm python3 zip dwarves
 
     - name: 编译器缓存
       id: cache-clang
